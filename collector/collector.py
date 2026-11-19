@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
+from google.protobuf.message import DecodeError
 from google.transit import gtfs_realtime_pb2
 
 # ---------------------------------------------------------------------------
@@ -54,6 +55,15 @@ STATIC_EVERY = int(_env("STATIC_EVERY", "86400"))     # once a day
 FLUSH_EVERY = int(_env("FLUSH_EVERY", "300"))         # write buffered GPS rows every 5 min
 
 MAX_BACKOFF = 300  # never wait more than 5 minutes between retries
+# The portal sometimes serves a cached, half-written copy of a large feed (seen: trip updates cut off
+# at exactly 640 KB). Retrying a few seconds later returns the same cached file, so wait for the next
+# refresh instead, and don't count it as our failure.
+CORRUPT_RETRY_AFTER = int(_env("CORRUPT_RETRY_AFTER", "20"))
+KEEP_BAD_FILES = 10  # keep the last N corrupt downloads in data/bad/ for inspection
+
+
+class FeedCorrupt(Exception):
+    """The server returned a file that isn't a complete GTFS-Realtime message."""
 
 log = logging.getLogger("collector")
 
@@ -279,6 +289,9 @@ class Collector:
     def __post_init__(self):
         self.db = open_db(self.data_dir / "collector.db")
         self.session.headers["User-Agent"] = "yyc-transit-reliability (student project)"
+        # Ask caches for a fresh copy, so a half-written cached file isn't served repeatedly.
+        self.session.headers["Cache-Control"] = "no-cache"
+        self.session.headers["Pragma"] = "no-cache"
         if APP_TOKEN:
             self.session.headers["X-App-Token"] = APP_TOKEN
         self.feeds = [
@@ -295,13 +308,35 @@ class Collector:
         resp.raise_for_status()  # 429 / 5xx become exceptions -> back-off
         return resp
 
+    def save_bad_payload(self, fs: FeedState, resp: requests.Response) -> None:
+        """Keep a copy of a corrupt download so it can be inspected later."""
+        bad_dir = self.data_dir / "bad"
+        bad_dir.mkdir(parents=True, exist_ok=True)
+        (bad_dir / f"{fs.name}_{int(time.time())}.bin").write_bytes(resp.content)
+        for old in sorted(bad_dir.glob("*.bin"))[:-KEEP_BAD_FILES]:
+            old.unlink()
+        log.warning(
+            "%s: corrupt download (%d bytes, Content-Length %s, Content-Type %s, starts %r)",
+            fs.name, len(resp.content), resp.headers.get("Content-Length"),
+            resp.headers.get("Content-Type"), resp.content[:40],
+        )
+
+    def fetch_feed(self, fs: FeedState):
+        """Download and parse a GTFS-Realtime feed. Raises FeedCorrupt for an incomplete file."""
+        resp = self.fetch(fs.url, timeout=30)
+        feed = gtfs_realtime_pb2.FeedMessage()
+        try:
+            feed.ParseFromString(resp.content)
+        except DecodeError as exc:
+            self.save_bad_payload(fs, resp)
+            raise FeedCorrupt(f"{len(resp.content)} bytes, incomplete or corrupt") from exc
+        return resp, feed
+
     def poll_realtime(self, fs: FeedState) -> None:
         status = None
         try:
-            resp = self.fetch(fs.url, timeout=30)
+            resp, feed = self.fetch_feed(fs)
             status = resp.status_code
-            feed = gtfs_realtime_pb2.FeedMessage()
-            feed.ParseFromString(resp.content)
             feed_ts = int(feed.header.timestamp)
 
             if feed_ts == fs.last_feed_ts:
@@ -340,7 +375,13 @@ class Collector:
                         entities=len(feed.entity), feed_ts=feed_ts)
             fs.schedule_next(ok=True)
 
-        # Catch everything on purpose: one bad poll must never stop the collector.
+        except FeedCorrupt as exc:
+            # The city's file, not our request: retry at the next refresh without growing back-off.
+            record_poll(self.db, fs.name, ok=False, http_status=200, error=f"corrupt: {exc}")
+            fs.next_at = time.time() + CORRUPT_RETRY_AFTER
+            log.warning("%s: corrupt feed, retrying in %ds", fs.name, CORRUPT_RETRY_AFTER)
+
+        # Catch everything else on purpose: one bad poll must never stop the collector.
         except Exception as exc:  # noqa: BLE001
             if isinstance(exc, requests.HTTPError) and exc.response is not None:
                 status = exc.response.status_code

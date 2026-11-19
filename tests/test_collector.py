@@ -189,11 +189,34 @@ def test_known_arrival_not_overwritten_by_placeholder(tmp_path):
     assert feed_ts == FEED_TS + 30         # but the row was refreshed
 
 
-def test_bad_protobuf_is_logged_not_fatal(tmp_path):
-    c = _collector(tmp_path, [_response(b"this is not protobuf")])
-    fs = _feed(c, "vehicles")
+def test_corrupt_feed_is_logged_without_backoff(tmp_path):
+    # Real case: trip updates cut off at exactly 640 KB by the portal's cache.
+    truncated = _trip_feed().SerializeToString()[:-7]
+    c = _collector(tmp_path, [_response(truncated)])
+    fs = _feed(c, "trips")
+    before = time.time()
     c.poll_realtime(fs)                    # must not raise
-    assert c.db.execute("SELECT ok FROM polls").fetchone()[0] == 0
+    ok, err = c.db.execute("SELECT ok, error FROM polls").fetchone()
+    assert ok == 0 and err.startswith("corrupt")
+    assert fs.failures == 0                # not counted as our failure
+    assert before + 15 <= fs.next_at <= time.time() + 25   # retry at next refresh, ~20 s
+    assert len(list((tmp_path / "bad").glob("*.bin"))) == 1   # kept for inspection
+
+
+def test_corrupt_then_good_recovers(tmp_path):
+    good = _vehicle_feed().SerializeToString()
+    c = _collector(tmp_path, [_response(b"half-written file"), _response(good)])
+    fs = _feed(c, "vehicles")
+    c.poll_realtime(fs)
+    c.poll_realtime(fs)
+    oks = [r[0] for r in c.db.execute("SELECT ok FROM polls ORDER BY rowid")]
+    assert oks == [0, 1]
+    assert len(c.position_buffer) == 1
+
+
+def test_asks_for_fresh_copy(tmp_path):
+    c = _collector(tmp_path, [])
+    assert c.session.headers["Cache-Control"] == "no-cache"
 
 
 def test_static_saved_once_per_version(tmp_path):
