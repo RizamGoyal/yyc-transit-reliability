@@ -25,7 +25,7 @@ Measuring Calgary's on-time performance has been done before as one-off studies 
 
 | Source | What it gives | How often | Notes |
 |---|---|---|---|
-| GTFS-Realtime **vehicle positions** | GPS location + trip ID for every active bus/train | Every ~15 s | ~25 KB per snapshot; the main source of truth |
+| GTFS-Realtime **vehicle positions** | GPS location + trip ID for every active bus/train | Feed refreshes every ~30–40 s (measured); polled every 15 s so no refresh is missed | ~25 KB per snapshot; the main source of truth. Most vehicles (~77% in a Nov 2026 check) have no per-vehicle GPS timestamp |
 | GTFS-Realtime **trip updates** | Predicted arrival/departure times per stop | Every ~30 s | ~1.3 MB per snapshot; no `delay` field; uses `-1` as a placeholder time |
 | GTFS-Realtime **service alerts** | Text about detours, closures, incidents | As issued | Archived for later search |
 | GTFS **static schedule** (zip) | Stops, trips, scheduled times, route shapes | Changes a few times a year | Must be versioned (see §4) |
@@ -69,17 +69,18 @@ The static schedule changes several times a year, and **trip IDs change with it*
 
 This is the hardest part.
 
-**Why "near the stop" doesn't work:** at 30 km/h a bus travels over 100 m between 15-second pings, so it can pass a stop without a ping anywhere near it.
+**Why "near the stop" doesn't work:** each bus's position updates about every 30 s (median measured in Nov 2026, 90th percentile 45 s). At 30 km/h that's about 250 m between updates, so a bus often passes a stop without a ping anywhere near it.
 
 **The method:**
 
 1. **Turn each ping into distance along the route.** Using the route's path from `shapes.txt`, project the GPS point onto the line: "bus is 3,420 m into its trip." Each stop gets the same treatment once.
-2. **Find the two pings on either side of each stop.** E.g. 3,420 m at 17:23:00 and 3,710 m at 17:23:15, with the stop at 3,600 m.
-3. **Interpolate the crossing time.** 3,600 is 62% of the way from 3,420 to 3,710, so the bus passed at about 17:23:09.
+2. **Find the two pings on either side of each stop.** E.g. 3,420 m at 17:23:00 and 3,710 m at 17:23:30, with the stop at 3,600 m.
+3. **Interpolate the crossing time.** 3,600 is 62% of the way from 3,420 to 3,710, so the bus passed at about 17:23:19.
 4. **Compare to the schedule** to get the delay at that stop.
 
 **Cleaning:**
 
+- **Missing timestamps:** most vehicles report no GPS timestamp of their own. For those, a ping's time is the feed time of the first snapshot where the position changed. Repeated identical positions are treated as one ping, not as a bus standing still.
 - GPS jitter (a bus appearing to move backwards) is smoothed.
 - Detours (pings far from the route shape) are flagged and excluded.
 - Layovers at the first stop are handled by measuring departure, not arrival.
