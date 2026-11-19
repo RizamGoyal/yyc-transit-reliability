@@ -1,0 +1,19 @@
+# secrets
+.env
+
+# private notes
+INTERVIEW_NOTES.md
+
+# collected data (backed up to R2, never committed)
+data/
+*.parquet
+*.pb
+
+# python
+__pycache__/
+.venv/
+*.pyc
+
+# node
+node_modules/
+dist/
