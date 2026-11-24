@@ -158,7 +158,7 @@ Score: _TBD_ / 40.
 - **Why not Azure:** Azure for Students blocked every low-cost VM size (B-series, A-series) on this subscription; the only allowed sizes cost about $70–80/month. Google's e2-micro is free within its limits.
 - **CI:** GitHub Actions runs `ruff` and the unit tests on every push; arrival-math tests and agent evals join as those parts are built
 - **Backups:** a `systemd` timer runs `scripts/backup.sh` nightly. GPS files and schedule versions sync to a Cloud Storage bucket in the same region (Always Free covers 5 GB); feed-health logs and alerts are exported to a small `meta.db` and uploaded too. Trip predictions are not backed up (secondary data, too large for free storage). Remote copies are never deleted
-- **Monitoring:** health page (last successful poll, entities per poll, gaps in the last 24 h) plus an external uptime ping
+- **Monitoring:** `scripts/health.py` reports poll success, gaps and storage. For alerts, a heartbeat timer runs `scripts/heartbeat.py` every 5 minutes. It pings healthchecks.io only if new (non-duplicate) vehicle data arrived in the last 15 minutes, and sends a `/fail` ping otherwise, so a stuck collector or a frozen City feed alerts right away. If the VM is down, no ping arrives at all and healthchecks.io emails after its grace period; that is why the alert lives off the VM. The nightly backup pings a second check when it finishes. Google Cloud's own uptime checks were skipped: they need a public HTTP endpoint (there isn't one yet), and the Ops Agent uses too much of the e2-micro's 1 GB of RAM
 
 ---
 

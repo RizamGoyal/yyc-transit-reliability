@@ -18,3 +18,9 @@ gcloud storage rsync --recursive "$DATA_DIR/static" "gs://$BUCKET/static"
 gcloud storage cp "$DATA_DIR/backup/meta.db" "gs://$BUCKET/meta.db"
 
 echo "backup ok $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# Tell healthchecks.io the backup finished. If any step above failed, set -e stops
+# the script before this line, no ping is sent, and healthchecks.io emails you.
+if [[ -n "${BACKUP_HEALTHCHECK_URL:-}" ]]; then
+  curl -fsS -m 10 --retry 3 -o /dev/null "$BACKUP_HEALTHCHECK_URL" || echo "warning: backup ping failed"
+fi
