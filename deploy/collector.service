@@ -1,3 +1,4 @@
+# Installed by deploy/install.sh, which replaces __USER__ with the server's username.
 [Unit]
 Description=YYC Transit Reliability collector
 After=network-online.target
@@ -5,10 +6,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=azureuser
-WorkingDirectory=/home/azureuser/yyc-transit-reliability
-EnvironmentFile=/home/azureuser/yyc-transit-reliability/.env
-ExecStart=/home/azureuser/yyc-transit-reliability/.venv/bin/python -m collector.collector
+User=__USER__
+WorkingDirectory=/home/__USER__/yyc-transit-reliability
+EnvironmentFile=/home/__USER__/yyc-transit-reliability/.env
+ExecStart=/home/__USER__/yyc-transit-reliability/.venv/bin/python -m collector.collector
 Restart=always
 RestartSec=10
 # Keep memory use in check on a 1 GB VM

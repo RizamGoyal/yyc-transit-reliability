@@ -49,9 +49,9 @@ Data: Contains information licensed under the Open Government Licence – City o
 
 - **Vehicle positions:** every ping is kept, written to compressed Parquet files. Raw data can't be downloaded again later, so keeping it means arrivals can be recomputed when the method improves.
 - **Trip updates:** too big to keep raw (≈3.9 GB/day at 30 s polling). Only the latest prediction per trip and stop is kept.
-- **Backups:** the raw archive is copied off the server nightly, because losing it means losing months of irreplaceable history.
+- **Backups:** the raw archive is copied to Cloud Storage nightly, because losing it means losing months of irreplaceable history.
 
-**Why not GitHub Actions or a laptop?** Scheduled GitHub Actions run at most every 5 minutes and can be delayed. A laptop sleeps. Both create gaps. The collector runs as a `systemd` service on a small VM that restarts automatically.
+**Why not GitHub Actions or a laptop?** Scheduled GitHub Actions run at most every 5 minutes and can be delayed. A laptop sleeps. Both create gaps. The collector runs as a `systemd` service on a small VM that restarts automatically. In its first 24 hours on the server it made 5,497 vehicle polls at 100% success with no restarts.
 
 ---
 
@@ -154,9 +154,10 @@ Score: _TBD_ / 40.
 
 ## 10. Infrastructure
 
-- **VM:** Azure B1s (Canada Central). The collector runs as a `systemd` service with automatic restart; Postgres + PostGIS and FastAPI are added in later phases
+- **VM:** Google Cloud e2-micro (us-central1, Iowa) on the Always Free tier: 1 GB RAM plus 2 GB swap, 30 GB standard disk. The collector runs as a `systemd` service with automatic restart; Postgres + PostGIS and FastAPI are added in later phases. `deploy/install.sh` installs the services for whichever user runs it.
+- **Why not Azure:** Azure for Students blocked every low-cost VM size (B-series, A-series) on this subscription; the only allowed sizes cost about $70–80/month. Google's e2-micro is free within its limits.
 - **CI:** GitHub Actions runs `ruff` and the unit tests on every push; arrival-math tests and agent evals join as those parts are built
-- **Backups:** nightly copy of the raw archive to Cloudflare R2
+- **Backups:** a `systemd` timer runs `scripts/backup.sh` nightly. GPS files and schedule versions sync to a Cloud Storage bucket in the same region (Always Free covers 5 GB); feed-health logs and alerts are exported to a small `meta.db` and uploaded too. Trip predictions are not backed up (secondary data, too large for free storage). Remote copies are never deleted
 - **Monitoring:** health page (last successful poll, entities per poll, gaps in the last 24 h) plus an external uptime ping
 
 ---

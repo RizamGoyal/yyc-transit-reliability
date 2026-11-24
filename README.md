@@ -1,6 +1,6 @@
 # YYC Transit Reliability
 
-![CI](https://github.com/RizamGoyal/yyc-transit-reliability/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/YOUR-USERNAME/yyc-transit-reliability/actions/workflows/ci.yml/badge.svg)
 
 **How often is your Calgary bus actually on time?** This project collects Calgary Transit's open real-time GPS data 24/7, works out when each bus really arrived at each stop, and publishes route report cards, a ghost-bus report, and leave-by advice for riders.
 
@@ -37,7 +37,7 @@ The interesting part is turning GPS pings every 15 seconds into actual arrival t
 
 ## Tech stack
 
-Python · PostgreSQL + PostGIS · pandas · scikit-learn / LightGBM · FastAPI · React + TypeScript · Claude API (tool calling) · GitHub Actions · Azure
+Python · PostgreSQL + PostGIS · pandas · scikit-learn / LightGBM · FastAPI · React + TypeScript · Claude API (tool calling) · GitHub Actions · Google Cloud (Compute Engine, Cloud Storage)
 
 ## Run it locally
 

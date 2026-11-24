@@ -1,0 +1,12 @@
+# Installed by deploy/install.sh. Run by backup.timer once a night.
+[Unit]
+Description=YYC Transit Reliability nightly backup to Cloud Storage
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=/home/__USER__/yyc-transit-reliability
+EnvironmentFile=/home/__USER__/yyc-transit-reliability/.env
+ExecStart=/bin/bash /home/__USER__/yyc-transit-reliability/scripts/backup.sh
