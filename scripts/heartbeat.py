@@ -64,7 +64,8 @@ def main() -> int:
     target = url if healthy else f"{url}/fail"
     try:
         # The message body shows up in the healthchecks.io event log.
-        requests.post(target, data=msg.encode(), timeout=10)
+        resp = requests.post(target, data=msg.encode(), timeout=10)
+        resp.raise_for_status()  # a 400 (bad URL) must not look like success
     except requests.RequestException as e:
         print(f"ping failed: {e}", file=sys.stderr)
         return 1
