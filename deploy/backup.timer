@@ -1,10 +1,11 @@
-# Runs the backup every night at 09:30 UTC (2:30 am in Calgary, winter time).
+# Runs the backup every night at 12:30 UTC = 06:30 in Calgary (UTC-6 year-round), after
+# nightly processing (05:20), so each morning's backup includes the new results.
 # Persistent=true: if the VM was off at that time, the backup runs when it starts.
 [Unit]
 Description=Nightly backup of collected data
 
 [Timer]
-OnCalendar=*-*-* 09:30:00 UTC
+OnCalendar=*-*-* 12:30:00 UTC
 Persistent=true
 RandomizedDelaySec=300
 

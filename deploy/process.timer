@@ -1,0 +1,13 @@
+# Runs nightly processing at 11:20 UTC = 05:20 in Calgary (Alberta Time, UTC-6 year-round
+# since Nov 2026). A service day's GPS runs until 05:00, so it's all on disk by then.
+# Persistent=true: if the VM was off at that time, it runs when the VM starts.
+[Unit]
+Description=Nightly processing of the previous service day
+
+[Timer]
+OnCalendar=*-*-* 11:20:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

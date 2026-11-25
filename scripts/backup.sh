@@ -2,6 +2,7 @@
 # Nightly backup of irreplaceable data to Google Cloud Storage.
 #   - GPS files and schedule versions: copied with rsync (only new/changed files upload)
 #   - polls, alerts, schedule-version records: exported to a small meta.db and uploaded
+#   - processed results (stop events per day + results.db): small, and quicker to restore than recompute
 # Trip predictions are NOT backed up: they're a secondary cross-check and would exceed free storage.
 # Remote files are never deleted, so a lost local disk can't wipe the backup.
 set -euo pipefail
@@ -16,6 +17,10 @@ mkdir -p "$DATA_DIR/backup"
 gcloud storage rsync --recursive "$DATA_DIR/positions" "gs://$BUCKET/positions"
 gcloud storage rsync --recursive "$DATA_DIR/static" "gs://$BUCKET/static"
 gcloud storage cp "$DATA_DIR/backup/meta.db" "gs://$BUCKET/meta.db"
+if [[ -d "$DATA_DIR/results" ]]; then
+  gcloud storage rsync --recursive "$DATA_DIR/results" "gs://$BUCKET/results"
+  gcloud storage cp "$DATA_DIR/results.db" "gs://$BUCKET/results.db"
+fi
 
 echo "backup ok $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 

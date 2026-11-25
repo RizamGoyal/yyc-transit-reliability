@@ -1,0 +1,17 @@
+[Unit]
+Description=YYC Transit Reliability nightly processing (GPS -> arrivals/departures for every route)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=/home/__USER__/yyc-transit-reliability
+EnvironmentFile=/home/__USER__/yyc-transit-reliability/.env
+ExecStart=/bin/bash /home/__USER__/yyc-transit-reliability/scripts/process.sh
+# Never compete with the collector: lowest-ish CPU and disk priority, and a memory cap
+# well inside the 1 GB VM (a service day peaks around 300-400 MB).
+Nice=10
+CPUWeight=20
+IOWeight=20
+MemoryMax=750M
+TimeoutStartSec=3h

@@ -3,6 +3,7 @@
 Usage:
     python scripts/run_day.py                    # yesterday (Calgary time)
     python scripts/run_day.py --date 2026-11-23  # a specific service day
+    python scripts/run_day.py --catch-up 7       # yesterday + any of the last 7 days not yet processed
 
 Steps: load any new schedule zips from data/static into data/schedule.db, process the
 day, write data/results/stop_events/<date>.csv.gz and the summaries in data/results.db.
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
 import sys
 import time
 from datetime import date, datetime, timedelta
@@ -39,35 +41,11 @@ def pct(a, b) -> str:
     return f"{100 * a / b:.1f}%" if b else "n/a"
 
 
-def main() -> None:
-    data = Path(os.environ.get("DATA_DIR", "data"))
-    p = argparse.ArgumentParser()
-    yesterday = datetime.now(TZ).date() - timedelta(days=1)
-    p.add_argument("--date", type=date.fromisoformat, default=yesterday,
-                   help="service day (default: yesterday)")
-    a = p.parse_args()
-    t0 = time.time()
-
-    sched = open_schedule(data / "schedule.db")
-    for zp in sorted((data / "static").glob("*.zip")):
-        version, loaded = load_schedule(zp, sched)
-        if loaded:
-            print(f"loaded new schedule version {version} from {zp.name}")
-
-    result = process_day(data / "positions", sched, a.date)
-    sched.close()
+def summarize(day: date, result, seconds: float, ev_path) -> None:
     info = result.info
-    if result.routes.empty:
-        sys.exit(f"{a.date}: no GPS files for this service day ({info['hours_missing']} hours missing)")
-
-    ev_path = write_events(result, data / "results" / "stop_events")
-    res = open_results(data / "results.db")
-    write_summaries(result, res, datetime.now(TZ).isoformat(timespec="seconds"))
-    res.close()
-
     r = result.routes.fillna(0)
     with_gps = r[r["trips_with_gps"] > 0]
-    print(f"service day {a.date} ({a.date:%a}) processed in {time.time() - t0:.0f}s, peak memory {peak_mb()}")
+    print(f"service day {day} ({day:%a}) processed in {seconds:.0f}s, peak memory {peak_mb()}")
     print(f"  GPS hour files      : {info['hour_files']} ({info['hours_missing']} missing)")
     print(f"  GPS rows            : {info['rows']:,}, matched to schedule "
           f"{pct(info['rows_matched'], info['rows'])}, used for this day {info['rows_used']:,}")
@@ -92,7 +70,64 @@ def main() -> None:
         print("  lowest on-time routes (30+ timepoint departures):")
         for row in big.nsmallest(5, "otp").itertuples():
             print(f"    {row.route:<5} {100 * row.otp:5.1f}%  ({int(row.tp_departures)} departures)")
-    print(f"wrote {ev_path} and data/results.db")
+    print(f"  wrote {ev_path} and results.db")
+
+
+def run_one(day: date, data: Path, sched: sqlite3.Connection, required: bool) -> bool:
+    """Process and save one day. Returns False if there was no GPS for it."""
+    t0 = time.time()
+    result = process_day(data / "positions", sched, day)
+    if result.routes.empty:
+        msg = f"{day}: no GPS files for this service day ({result.info['hours_missing']} hours missing)"
+        if required:
+            sys.exit(msg)
+        print(f"skipped {msg}")
+        return False
+    ev_path = write_events(result, data / "results" / "stop_events")
+    res = open_results(data / "results.db")
+    write_summaries(result, res, datetime.now(TZ).isoformat(timespec="seconds"))
+    res.close()
+    summarize(day, result, time.time() - t0, ev_path)
+    return True
+
+
+def main() -> None:
+    data = Path(os.environ.get("DATA_DIR", "data"))
+    p = argparse.ArgumentParser()
+    p.add_argument("--date", type=date.fromisoformat, help="service day (default: yesterday)")
+    p.add_argument("--catch-up", type=int, default=0, metavar="N",
+                   help="also process any of the last N days not yet in results.db")
+    a = p.parse_args()
+    yesterday = datetime.now(TZ).date() - timedelta(days=1)
+
+    sched = open_schedule(data / "schedule.db")
+    for zp in sorted((data / "static").glob("*.zip")):
+        version, loaded = load_schedule(zp, sched)
+        if loaded:
+            print(f"loaded new schedule version {version} from {zp.name}")
+
+    if a.date:
+        days, required = [a.date], True
+    else:
+        done = set()
+        if (data / "results.db").exists():
+            res = open_results(data / "results.db")
+            done = {r[0] for r in res.execute("SELECT service_date FROM days")}
+            res.close()
+        earlier = [yesterday - timedelta(days=k) for k in range(a.catch_up - 1, 0, -1)]
+        days = [d for d in earlier if d.isoformat() not in done] + [yesterday]
+        required = False
+
+    failed = []
+    for day in days:
+        try:
+            run_one(day, data, sched, required)
+        except Exception as e:  # noqa: BLE001 -- one bad day must not stop the others; reported below
+            print(f"FAILED {day}: {type(e).__name__}: {e}", file=sys.stderr)
+            failed.append(day)
+    sched.close()
+    if failed:
+        sys.exit(f"{len(failed)} day(s) failed: {', '.join(map(str, failed))}")
 
 
 if __name__ == "__main__":
