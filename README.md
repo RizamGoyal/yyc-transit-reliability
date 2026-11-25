@@ -18,13 +18,13 @@
 ## How it works (short version)
 
 ```
-Calgary open data ──► Collector ──► Raw GPS archive ──► Arrival math ──► Postgres + PostGIS
-  (GPS, predictions,   (15 s polls)    (Parquet)        (interpolate      │
+Calgary open data ──► Collector ──► Raw GPS archive ──► Arrival math ──► SQLite results
+  (GPS, predictions,   (15 s polls)    (gzip CSV)       (interpolate      │
    alerts, schedule)                                     along route)      ├─► Nightly JSON ──► React site (GitHub Pages)
 Open-Meteo weather ─────────────────────────────────────────┘              └─► FastAPI ──► AI assistant (Claude + tools)
 ```
 
-The interesting part is turning GPS pings every 15 seconds into actual arrival times. See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full design, decisions and trade-offs.
+The interesting part is turning GPS pings (one every ~30 seconds per bus) into actual arrival times. See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full design, decisions and trade-offs.
 
 ## Results
 
@@ -37,7 +37,7 @@ The interesting part is turning GPS pings every 15 seconds into actual arrival t
 
 ## Tech stack
 
-Python · PostgreSQL + PostGIS · pandas · scikit-learn / LightGBM · FastAPI · React + TypeScript · Claude API (tool calling) · GitHub Actions · Google Cloud (Compute Engine, Cloud Storage)
+Python · SQLite · pandas + NumPy · scikit-learn / LightGBM · FastAPI · React + TypeScript · Claude API (tool calling) · GitHub Actions · Google Cloud (Compute Engine, Cloud Storage)
 
 ## Run it locally
 

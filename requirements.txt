@@ -1,5 +1,8 @@
 requests>=2.31
 gtfs-realtime-bindings>=1.0
 protobuf>=4.21
+pandas>=2.2
+numpy>=1.26
+tzdata>=2024.1   # time zone data for Windows (zoneinfo)
 pytest>=8.0
 ruff>=0.6

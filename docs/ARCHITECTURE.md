@@ -59,9 +59,13 @@ Data: Contains information licensed under the Open Government Licence – City o
 
 The static schedule changes several times a year, and **trip IDs change with it**. If a December arrival is matched against the January schedule, it's compared to the wrong trip.
 
-- Every downloaded schedule zip is hashed. A new hash means a new schedule version, stored with the dates it was active.
-- Each observation is matched to the schedule version active **on that service day**.
-- GTFS times can go past 24:00 (for example `25:10:00` means 1:10 am the next calendar day, but the same service day). Times are converted with the `America/Edmonton` time zone, which also handles daylight saving.
+- Every downloaded schedule zip is hashed (`pipeline/schedule.py`). The first 8 hex characters of the SHA-256 are the version ID, and every schedule table carries it. Loading is idempotent and happens in one transaction, so a half-loaded version can't exist.
+- Each GPS row is matched to the version in effect on its date: the newest version first downloaded on or before that date.
+- GTFS times can go past 24:00 (for example `25:10:00` means 1:10 a.m. the next calendar day, but the same service day). They're stored as seconds after service-day midnight and never wrapped.
+- **Service day of a GPS row** (`pipeline/match.py`): the vehicle feed gives a trip ID but usually no date. A bus seen at 12:40 a.m. Tuesday is normally finishing a Monday trip. The matcher tries "today" and "yesterday" (Calgary time) and keeps whichever puts the observed time inside, or closest to, the trip's scheduled span.
+- The matcher also checks that the trip's `service_id` actually runs that day (`calendar.txt` plus `calendar_dates.txt` exceptions), which catches holiday schedules and mismatched trip IDs.
+- Calgary's real schedule: 261 routes, ~27.6k trips, ~927k stop times, ~346k shape points. It loads into SQLite in under 10 s.
+- Known limitations: on the two daylight-saving nights a year, GTFS service time and wall-clock time differ by an hour for trips after 2 a.m. The schedule version is chosen by the GPS row's calendar date, which is only wrong for a trip crossing midnight on the exact night a new schedule starts.
 
 ---
 
@@ -154,7 +158,7 @@ Score: _TBD_ / 40.
 
 ## 10. Infrastructure
 
-- **VM:** Google Cloud e2-micro (us-central1, Iowa) on the Always Free tier: 1 GB RAM plus 2 GB swap, 30 GB standard disk. The collector runs as a `systemd` service with automatic restart; Postgres + PostGIS and FastAPI are added in later phases. `deploy/install.sh` installs the services for whichever user runs it.
+- **VM:** Google Cloud e2-micro (us-central1, Iowa) on the Always Free tier: 1 GB RAM plus 2 GB swap, 30 GB standard disk. The collector runs as a `systemd` service with automatic restart; a nightly processing job and FastAPI (for the assistant) are added in later phases. `deploy/install.sh` installs the services for whichever user runs it.
 - **Why not Azure:** Azure for Students blocked every low-cost VM size (B-series, A-series) on this subscription; the only allowed sizes cost about $70–80/month. Google's e2-micro is free within its limits.
 - **CI:** GitHub Actions runs `ruff` and the unit tests on every push; arrival-math tests and agent evals join as those parts are built
 - **Backups:** a `systemd` timer runs `scripts/backup.sh` nightly. GPS files and schedule versions sync to a Cloud Storage bucket in the same region (Always Free covers 5 GB); feed-health logs and alerts are exported to a small `meta.db` and uploaded too. Trip predictions are not backed up (secondary data, too large for free storage). Remote copies are never deleted
@@ -171,6 +175,7 @@ Score: _TBD_ / 40.
 | Static site + small VM | $0 hosting; fast pages | Pages update nightly, not live |
 | Own agent loop, fixed SQL tools | Easy to explain, test and secure | Less flexible than free-form SQL |
 | Baseline before ML | Proves the model adds value | Slower path to "ML" on the resume |
+| SQLite + NumPy instead of Postgres + PostGIS | The site is static, so nothing queries a database live; a Postgres server would hold 100+ MB of the VM's 1 GB RAM around the clock; the route-snapping math is ~30 lines of NumPy that can be explained and tested | No spatial SQL; revisit if a live API ever needs it |
 
 ---
 
