@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pipeline.arrivals import measure_lag, route_day_arrivals
 from pipeline.geometry import EARTH_RADIUS_M
-from pipeline.match import TZ, match_trips
+from pipeline.match import TZ, check_match_rate, match_trips
 from pipeline.positions import load_positions
 
 EARLY_S, LATE_S = -60, 300
@@ -56,13 +56,14 @@ def main() -> None:
 
     db = sqlite3.connect(a.db)
     m = match_trips(load_positions(a.days), db)
+    check_match_rate(m, db)
     sel = m[m["service_active"] & (m["route_short_name"] == a.route) & (m["service_date"] == a.date)]
     arr, _, _ = route_day_arrivals(sel, db, lag_s=measure_lag(m)[0])
-    first = arr.groupby("trip_id")["stop_sequence"].transform("min") == arr["stop_sequence"]
+    first = arr.groupby("trip_id", observed=True)["stop_sequence"].transform("min") == arr["stop_sequence"]
     arr = arr[~first & arr["actual_ts"].notna()]
 
     # ---- A. trips whose whole run is far off schedule ------------------------------------
-    per_trip = arr.groupby("trip_id")["delay_s"].agg(["median", "size"])
+    per_trip = arr.groupby("trip_id", observed=True)["delay_s"].agg(["median", "size"])
     absmed = per_trip["median"].abs() / 60
     print("== A. per-trip median delay ==")
     for lo, hi in [(0, 10), (10, 30), (30, 60), (60, 1e9)]:
@@ -70,8 +71,8 @@ def main() -> None:
     odd = per_trip[absmed >= 30].sort_values("median")
     if len(odd):
         print("\n  trips 30+ min off (vehicle, scheduled span, observed span):")
-        trips = sel.groupby("trip_id").agg(vehicle=("vehicle_id", "first"), t0=("feed_ts", "min"),
-                                           t1=("feed_ts", "max"))
+        trips = sel.groupby("trip_id", observed=True).agg(
+            vehicle=("vehicle_id", "first"), t0=("feed_ts", "min"), t1=("feed_ts", "max"))
         for trip_id, r in odd.iterrows():
             a_t = arr[arr["trip_id"] == trip_id]
             tr = trips.loc[trip_id]
@@ -81,8 +82,9 @@ def main() -> None:
             # What else did that vehicle report around then?
             near = m["feed_ts"].between(tr["t0"] - 3 * 3600, tr["t1"] + 3600)
             v = m[(m["vehicle_id"] == tr["vehicle"]) & near]
-            other = v.groupby("trip_id", dropna=False).agg(t0=("feed_ts", "min"), t1=("feed_ts", "max"),
-                                                          start=("trip_start_s", "first")).sort_values("t0")
+            other = v.groupby("trip_id", dropna=False, observed=True).agg(
+                t0=("feed_ts", "min"), t1=("feed_ts", "max"), start=("trip_start_s", "first"),
+            ).sort_values("t0")
             for oid, o in other.iterrows():
                 st = ""
                 if pd.notna(o["start"]):
@@ -104,7 +106,7 @@ def main() -> None:
     round_min = (normal["scheduled_ts"] % 60 == 0)
     print(f"  scheduled times on a whole minute: {100 * round_min.mean():.0f}%")
     # Where along the trip are the early arrivals?
-    pos = normal.groupby("trip_id")["stop_sequence"].rank(pct=True)
+    pos = normal.groupby("trip_id", observed=True)["stop_sequence"].rank(pct=True)
     for lo, hi in [(0, 0.33), (0.33, 0.67), (0.67, 1.01)]:
         sel_part = (pos > lo) & (pos <= hi)
         label = f"trip part {lo:.0%}-{min(hi, 1):.0%}"
@@ -115,7 +117,7 @@ def main() -> None:
     s = sel.sort_values(["vehicle_id", "feed_ts"])
     with_ts, no_ts = s[s["vehicle_ts"].notna()], s[s["vehicle_ts"].isna()]
     rows = []
-    for _, g in with_ts.groupby("vehicle_id"):
+    for _, g in with_ts.groupby("vehicle_id", observed=True):
         if len(g) < 2:
             continue
         mv = step_m(g)
@@ -130,7 +132,7 @@ def main() -> None:
               f"{100 * (new['moved'] == 0).mean():.1f}% of new fixes")
         print(f"    new timestamp, moved 0-5 m (jitter)   : "
               f"{100 * ((new['moved'] > 0) & (new['moved'] < 5)).mean():.1f}% of new fixes")
-    rows = [step_m(g) for _, g in no_ts.groupby("vehicle_id") if len(g) >= 2]
+    rows = [step_m(g) for _, g in no_ts.groupby("vehicle_id", observed=True) if len(g) >= 2]
     if rows:
         mv = np.concatenate(rows)
         print(f"  buses WITHOUT own timestamp ({len(mv):,} pairs):")
@@ -139,7 +141,7 @@ def main() -> None:
 
     # ---- D. timestamp lag, first occurrence of each fix only -----------------------------
     print("\n== D. feed time minus vehicle GPS time (first time each fix appears) ==")
-    f = with_ts.groupby(["vehicle_id", "vehicle_ts"])["feed_ts"].min().reset_index()
+    f = with_ts.groupby(["vehicle_id", "vehicle_ts"], observed=True)["feed_ts"].min().reset_index()
     lag = (f["feed_ts"] - f["vehicle_ts"]).astype(float).to_numpy()
     if len(lag):
         print(f"  fixes {len(lag):,}   median {np.median(lag):.0f}s   p10 {np.percentile(lag, 10):.0f}s   "

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import numpy as np
 
 EARTH_RADIUS_M = 6_371_000.0
+_EMPTY = np.array([])
 
 
 def to_xy(lat: np.ndarray, lon: np.ndarray, lat0: float, lon0: float) -> tuple[np.ndarray, np.ndarray]:
@@ -42,52 +43,85 @@ class Polyline:
         seg = np.hypot(np.diff(x), np.diff(y))
         return cls(lat0, lon0, x, y, np.concatenate([[0.0], np.cumsum(seg)]))
 
+    def __post_init__(self) -> None:
+        # Segment geometry, computed once per shape (not once per GPS point).
+        self._x0, self._y0 = self.x[:-1], self.y[:-1]
+        self._vx, self._vy = np.diff(self.x), np.diff(self.y)
+        self._len2 = self._vx * self._vx + self._vy * self._vy
+        self._len = np.sqrt(self._len2)
+        # 1/len^2, with 0 for zero-length segments (projection then lands on the segment start).
+        self._inv_len2 = np.divide(1.0, self._len2, out=np.zeros_like(self._len2), where=self._len2 > 0)
+        self._cum0 = self.cum[:-1]
+        self._kx = np.pi / 180 * EARTH_RADIUS_M * np.cos(np.radians(self.lat0))
+        self._ky = np.pi / 180 * EARTH_RADIUS_M
+
     @property
     def length(self) -> float:
         return float(self.cum[-1])
 
-    def candidates(self, lat: float, lon: float) -> tuple[np.ndarray, np.ndarray]:
-        """For one point: (distance along the line, perpendicular distance) to every segment."""
-        px, py = to_xy(np.array([lat]), np.array([lon]), self.lat0, self.lon0)
-        x0, y0 = self.x[:-1], self.y[:-1]
-        vx, vy = np.diff(self.x), np.diff(self.y)
-        seg_len2 = vx * vx + vy * vy
-        with np.errstate(invalid="ignore", divide="ignore"):
-            t = ((px - x0) * vx + (py - y0) * vy) / seg_len2
-        t = np.clip(np.nan_to_num(t), 0.0, 1.0)  # zero-length segments -> t = 0
+    def _segment_range(self, lo: float | None, hi: float | None) -> slice:
+        """Segments overlapping [lo, hi] metres along the line (all segments if unbounded)."""
+        n = len(self._len)
+        i0 = 0 if lo is None else max(int(self.cum.searchsorted(lo, side="right")) - 1, 0)
+        i1 = n if hi is None else min(int(self.cum.searchsorted(hi, side="left")) + 1, n)
+        return slice(i0, max(i1, i0))
+
+    def candidates(self, lat: float, lon: float, lo: float | None = None,
+                   hi: float | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """For one point: (distance along the line, perpendicular distance) to each segment
+        overlapping [lo, hi] metres along the line (every segment if no bounds)."""
+        px = (lon - self.lon0) * self._kx
+        py = (lat - self.lat0) * self._ky
+        r = self._segment_range(lo, hi)
+        x0, y0, vx, vy = self._x0[r], self._y0[r], self._vx[r], self._vy[r]
+        # (np.minimum/np.maximum instead of np.clip: same result, far less per-call overhead;
+        # this runs once per GPS ping, ~1M times a day.)
+        t = np.minimum(np.maximum(((px - x0) * vx + (py - y0) * vy) * self._inv_len2[r], 0.0), 1.0)
         off = np.hypot(px - (x0 + t * vx), py - (y0 + t * vy))
-        along = self.cum[:-1] + t * np.sqrt(seg_len2)
+        along = self._cum0[r] + t * self._len[r]
         return along, off
 
-    def passes(self, lat: float, lon: float, max_off: float) -> tuple[np.ndarray, np.ndarray]:
+    def passes(self, lat: float, lon: float, max_off: float, lo: float | None = None,
+               hi: float | None = None) -> tuple[np.ndarray, np.ndarray]:
         """Every separate time the line passes within max_off of the point.
 
         Consecutive segments within reach form one "pass"; each pass is reduced to its
         closest point. On an out-and-back street this gives two candidates (outbound and
         return) instead of a smear of nearby segments.
+        lo/hi limit the search to part of the line (a 2*max_off margin is added so a pass
+        isn't cut in half at the edge).
         Returns (along, off) arrays, one entry per pass, in order along the line.
         """
-        along, off = self.candidates(lat, lon)
-        near = off <= max_off
-        if not near.any():
-            return np.array([]), np.array([])
-        idx = np.flatnonzero(near)
-        breaks = np.flatnonzero(np.diff(idx) > 1) + 1
-        best = [run[np.argmin(off[run])] for run in np.split(idx, breaks)]
+        margin = 2 * max_off
+        along, off = self.candidates(lat, lon, None if lo is None else lo - margin,
+                                     None if hi is None else hi + margin)
+        idx = (off <= max_off).nonzero()[0]
+        if idx.size == 0:
+            return _EMPTY, _EMPTY
+        gaps = (idx[1:] - idx[:-1]) > 1
+        if not gaps.any():  # the common case: one pass
+            i = idx[off[idx].argmin()]
+            return along[i : i + 1], off[i : i + 1]
+        best = [run[off[run].argmin()] for run in np.split(idx, gaps.nonzero()[0] + 1)]
         return along[best], off[best]
 
     def locate(self, lat: float, lon: float, *, after: float, max_off: float,
-               back_tol: float = 0.0) -> tuple[float, float] | None:
+               back_tol: float = 0.0, until: float | None = None) -> tuple[float, float] | None:
         """Distance along the line for a point: the EARLIEST pass at or after
         `after - back_tol`.
 
         "Earliest ahead" is what keeps a bus on the right leg of an out-and-back route:
         it can't jump onto the return leg or skip forward past part of the route.
+        `until` (optional) is the furthest the vehicle could have got; passes beyond it are
+        ignored, which also makes the search much faster on long shapes.
         Returns (along, off) or None if the point isn't near the line ahead.
         """
-        along, off = self.passes(lat, lon, max_off)
+        lo = after - back_tol if np.isfinite(after) else None
+        along, off = self.passes(lat, lon, max_off, lo, until)
         ok = along >= after - back_tol
+        if until is not None:
+            ok &= along <= until
         if not ok.any():
             return None
-        i = int(np.flatnonzero(ok)[0])
+        i = int(ok.argmax())  # first True
         return float(along[i]), float(off[i])

@@ -65,7 +65,8 @@ The static schedule changes several times a year, and **trip IDs change with it*
 - **Service day of a GPS row** (`pipeline/match.py`): the vehicle feed gives a trip ID but usually no date. A bus seen at 12:40 a.m. Tuesday is normally finishing a Monday trip. The matcher tries "today" and "yesterday" (Calgary time) and keeps whichever puts the observed time inside, or closest to, the trip's scheduled span.
 - The matcher also checks that the trip's `service_id` actually runs that day (`calendar.txt` plus `calendar_dates.txt` exceptions), which catches holiday schedules and mismatched trip IDs.
 - Calgary's real schedule: 261 routes, ~27.6k trips, ~927k stop times, ~346k shape points. It loads into SQLite in under 10 s.
-- Known limitations: on the two daylight-saving nights a year, GTFS service time and wall-clock time differ by an hour for trips after 2 a.m. The schedule version is chosen by the GPS row's calendar date, which is only wrong for a trip crossing midnight on the exact night a new schedule starts.
+- **Time zone:** Alberta moved to permanent UTC−6 ("Alberta Time") on Nov 1, 2026, so there are no more clock changes to handle. All times are stored in UTC. Calgary time comes from the pinned `tzdata` package, not the operating system, because a server with time-zone data older than the change would silently shift every result by an hour; a test fails if the rules are ever stale.
+- Known limitation: the schedule version is chosen by the GPS row's calendar date, which is only wrong for a trip crossing midnight on the exact night a new schedule starts.
 
 ---
 
@@ -105,6 +106,14 @@ This is the hardest part.
 - **Leave-one-out (automatic):** for every ping within 15 m of a stop, hide it, interpolate its time from the neighbouring pings, and compare. This runs over thousands of real stop visits. It's pessimistic, because hiding a ping doubles the gap being bridged. Results: _TBD_.
 - **Unit tests** with known answers: constant speed, out-and-back routes on dense shapes, backwards jitter, off-route pings, long gaps, a bus 3 minutes late.
 - **Independent check:** one session at a busy stop, hand-timing real arrivals against computed ones. Results: _TBD_.
+
+**Processing a whole day** (`pipeline/day.py`, `scripts/run_day.py`):
+
+- Loads only the GPS hours a service day needs: 02:00 on the day to 05:00 the next (27 hourly files, listed in UTC).
+- Memory: a day is ~1M GPS rows. IDs and schedule attributes are categorical (each distinct value stored once) and schedule data is looked up once per distinct trip, not merged a million times. Peak memory went from ~530 MB to ~320 MB on a synthetic day, which matters on a 1 GB VM.
+- Speed: snapping searches only the part of the route the bus could physically have reached since its last ping. This is 2.5× faster with identical output (checked on 300 random trips, including loops and out-and-back routes).
+- **Storage:** one compressed file of stop events per day (`results/stop_events/YYYY-MM-DD.csv.gz`, ~450k rows) plus small per-route daily summaries in `results.db`. Rows in SQLite would be ~10 GB/year on a 30 GB disk; compressed files are ~2 GB/year and any day can be recomputed from raw GPS. Re-running a day replaces its results (written to a temp file, then swapped in; summaries in one transaction).
+- New schedule zips are loaded automatically before each run.
 
 ---
 

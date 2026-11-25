@@ -67,7 +67,7 @@ def main() -> None:
     print("\n== per service day: scheduled trips that appeared in GPS ==")
     print("  (only days fully inside the files are meaningful; edge days are partial)")
     ok = m[m["service_active"]]
-    for (version, day), g in ok.groupby(["version", "service_date"]):
+    for (version, day), g in ok.groupby(["version", "service_date"], observed=True):
         services = active_services(db, version, day)
         sched = db.execute(
             f"SELECT COUNT(*), COUNT(DISTINCT route_id) FROM trips WHERE version = ? "

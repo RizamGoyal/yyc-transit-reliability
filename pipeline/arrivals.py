@@ -35,6 +35,7 @@ import numpy as np
 import pandas as pd
 
 from pipeline.geometry import Polyline
+from pipeline.match import TZ
 
 MAX_OFF_M = 50.0         # ping farther than this from the route line is ignored
 STOP_MAX_OFF_M = 100.0   # stops can sit a bit off the drawn line
@@ -78,8 +79,10 @@ def build_track(pings: pd.DataFrame, line: Polyline, *, keep_repeats: bool = Fal
         if np.isnan(lat) or np.isnan(lon):
             dropped += 1
             continue
+        # Only search as far ahead as the bus could physically have got since the last ping.
+        reach = prev_d + MAX_SPEED_MS * (t - prev_t) if ts else None
         hit = line.locate(lat, lon, after=max(prev_d, 0.0) if ts else 0.0, max_off=MAX_OFF_M,
-                          back_tol=BACK_TOL_M if ts else 0.0)
+                          back_tol=BACK_TOL_M if ts else 0.0, until=reach)
         if hit is None:
             dropped += 1
             continue
@@ -193,6 +196,24 @@ def _stop_times(db: sqlite3.Connection, version: str, trip_id: str) -> pd.DataFr
     )
 
 
+def _stop_times_many(db: sqlite3.Connection, version: str, trip_ids: list[str]) -> dict[str, pd.DataFrame]:
+    """Stop times for many trips in a few queries (one query per trip cost ~40 s a day)."""
+    out: dict[str, pd.DataFrame] = {}
+    for i in range(0, len(trip_ids), 500):  # stay under SQLite's limit on query parameters
+        chunk = trip_ids[i : i + 500]
+        df = pd.read_sql_query(
+            "SELECT st.trip_id, st.stop_sequence, st.stop_id, st.arrival_s, st.departure_s, st.timepoint, "
+            "s.stop_lat, s.stop_lon "
+            "FROM stop_times st JOIN stops s ON s.version = st.version AND s.stop_id = st.stop_id "
+            f"WHERE st.version=? AND st.trip_id IN ({','.join('?' * len(chunk))}) "
+            "ORDER BY st.trip_id, st.stop_sequence",
+            db, params=(version, *chunk),
+        )
+        for trip_id, g in df.groupby("trip_id", sort=False):
+            out[str(trip_id)] = g.drop(columns="trip_id").reset_index(drop=True)
+    return out
+
+
 def best_run(track: Track, sched_mid_ts: float) -> tuple[float, float, int]:
     """Split an ON-ROUTE track wherever it has no on-route ping for more than RUN_GAP_S, and
     return the time range (lo, hi) of the part whose middle is closest to the trip's
@@ -219,7 +240,7 @@ def measure_lag(rows: pd.DataFrame, min_fixes: int = 200) -> tuple[float, int]:
     """Median of (feed time - GPS fix time) over the first appearance of each fix.
     Returns (lag seconds, number of fixes); DEFAULT_LAG_S if there are too few."""
     has = rows[rows["vehicle_ts"].notna()]
-    first = has.groupby(["vehicle_id", "vehicle_ts"])["feed_ts"].min().reset_index()
+    first = has.groupby(["vehicle_id", "vehicle_ts"], observed=True)["feed_ts"].min().reset_index()
     lag = (first["feed_ts"] - first["vehicle_ts"]).astype(float)
     if len(lag) < min_fixes:
         return DEFAULT_LAG_S, len(lag)
@@ -244,7 +265,11 @@ def route_day_arrivals(
              "pings_dropped": 0, "stops_unplaced": 0}
     m = m[in_window]
     rows, loo = [], []
-    for (version, trip_id, service_date), g in m.groupby(["version", "trip_id", "service_date"], sort=False):
+    stop_times: dict[str, dict[str, pd.DataFrame]] = {}
+    for version, ids in m.groupby("version", observed=True)["trip_id"]:
+        stop_times[str(version)] = _stop_times_many(db, str(version), sorted({str(t) for t in ids.dropna()}))
+    groups = m.groupby(["version", "trip_id", "service_date"], sort=False, observed=True)
+    for (version, trip_id, service_date), g in groups:
         stats["trips"] += 1
         shape_id = g["shape_id"].iloc[0]
         if pd.isna(shape_id):
@@ -255,21 +280,26 @@ def route_day_arrivals(
             shapes[key] = _shape(db, version, shape_id)
         line = shapes[key]
 
-        midnight = pd.Timestamp(service_date, tz="America/Edmonton").timestamp()
+        midnight = pd.Timestamp(service_date).tz_localize(TZ).timestamp()
         stale = g["vehicle_ts"].notna() & g.duplicated(["vehicle_id", "vehicle_ts"])
         fresh = g.loc[~stale, ["t", "lat", "lon"]]
         sched_mid = midnight + (g["trip_start_s"].iloc[0] + g["trip_end_s"].iloc[0]) / 2
-        lo, hi, n_other = best_run(build_track(fresh, line, keep_repeats=True), sched_mid)
+        dep_track = build_track(fresh, line, keep_repeats=True)
+        lo, hi, n_other = best_run(dep_track, sched_mid)
         stats["pings_other_run"] += n_other
         stats["trips_split"] += int(n_other > 0)
-        g = g[g["t"].between(lo, hi)]
-        fresh = fresh[fresh["t"].between(lo, hi)]
+        if n_other:  # split: rebuild the departure track from the kept run only
+            g = g[g["t"].between(lo, hi)]
+            fresh = fresh[fresh["t"].between(lo, hi)]
+            dep_track = build_track(fresh, line, keep_repeats=True)
+        # (Not split, ~97% of trips: the track used to look for splits IS the departure track.)
 
         track = build_track(g[["t", "lat", "lon"]], line)
-        dep_track = build_track(fresh, line, keep_repeats=True)
         stats["pings_dropped"] += track.dropped
 
-        st = _stop_times(db, version, trip_id)
+        st = stop_times[str(version)].get(str(trip_id))
+        if st is None:
+            st = _stop_times(db, str(version), str(trip_id))
         pattern = (version, shape_id, tuple(st["stop_id"]))
         if pattern not in stop_cache:
             stop_cache[pattern] = stop_distances(st["stop_lat"], st["stop_lon"], line)

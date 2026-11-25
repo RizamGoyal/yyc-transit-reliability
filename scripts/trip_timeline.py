@@ -94,7 +94,7 @@ def main() -> None:
 
     st = _stop_times(db, r0["version"], a.trip)
     sd = stop_distances(st["stop_lat"], st["stop_lon"], line)
-    midnight = pd.Timestamp(r0["service_date"], tz="America/Edmonton").timestamp()
+    midnight = pd.Timestamp(r0["service_date"]).tz_localize(TZ).timestamp()
     sched = st["arrival_s"].astype("Float64").fillna(st["departure_s"].astype("Float64")).astype(float)
     print("\n  schedule (every 5th stop, plus last):")
     for i in sorted({*range(0, len(st), 5), len(st) - 1}):

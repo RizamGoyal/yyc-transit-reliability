@@ -23,7 +23,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pipeline.arrivals import MAX_GAP_S, measure_lag, route_day_arrivals
-from pipeline.match import match_trips
+from pipeline.match import check_match_rate, match_trips
 from pipeline.positions import load_positions
 
 EARLY_S, LATE_S = -60, 300  # on time = up to 1 min early, up to 5 min late
@@ -55,6 +55,7 @@ def main() -> None:
     t0 = time.time()
     db = sqlite3.connect(a.db)
     m = match_trips(load_positions(a.days), db)
+    check_match_rate(m, db)
     sel = m[m["service_active"] & (m["route_short_name"] == a.route) & (m["service_date"] == a.date)]
     if sel.empty:
         day = m[m["service_active"] & (m["service_date"] == a.date)]
@@ -90,7 +91,7 @@ def main() -> None:
 
     tp = arr["timepoint"] == 1
     dep = arr[tp & arr["departure_ts"].notna()]
-    last = arr.groupby("trip_id")["stop_sequence"].transform("max") == arr["stop_sequence"]
+    last = arr.groupby("trip_id", observed=True)["stop_sequence"].transform("max") == arr["stop_sequence"]
     print("\n== HEADLINE: departures from timepoints (on time = 1 min early to 5 min late) ==")
     print(f"  timepoint departures measured: {len(dep):,} / {int((tp & ~last).sum()):,}")
     print(otp("all buses", dep["dep_delay_s"].to_numpy()))
@@ -98,12 +99,12 @@ def main() -> None:
     print(otp("buses without", dep.loc[~dep["own_timestamp"], "dep_delay_s"].to_numpy()))
     print("  (without own timestamp, a stale repeat looks like standing still: departures may read late;")
     print("   a big gap between those two lines means that bias matters)")
-    first_dep = arr[(arr.groupby("trip_id")["stop_sequence"].transform("min") == arr["stop_sequence"])
-                    & arr["departure_ts"].notna()]
+    is_first = arr.groupby("trip_id", observed=True)["stop_sequence"].transform("min") == arr["stop_sequence"]
+    first_dep = arr[is_first & arr["departure_ts"].notna()]
     print(otp("first stop of trip", first_dep["dep_delay_s"].to_numpy()))
 
     # First stop of each trip: the bus waits there, so its ARRIVAL means nothing.
-    first = arr.groupby("trip_id")["stop_sequence"].transform("min") == arr["stop_sequence"]
+    first = arr.groupby("trip_id", observed=True)["stop_sequence"].transform("min") == arr["stop_sequence"]
     visits = arr[~first]
     est = visits["actual_ts"].notna()
     print("\n== arrivals at every stop (what a rider at any stop sees) ==")

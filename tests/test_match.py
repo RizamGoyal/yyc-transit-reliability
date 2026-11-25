@@ -64,3 +64,13 @@ def test_keeps_row_order_and_count(db):
             (ts(2026, 11, 24, 0, 40), "T1", None)]
     out = match_trips(gps(rows), db)
     assert out["feed_ts"].tolist() == [r[0] for r in rows]
+
+
+def test_calgary_time_zone_rules_are_current():
+    """Alberta switched to permanent UTC-6 on Nov 1 2026. Stale time-zone data would say
+    UTC-7 in winter and shift every result by an hour, so fail loudly if that happens."""
+    from datetime import timedelta
+    assert datetime(2026, 12, 15, 12, tzinfo=TZ).utcoffset() == timedelta(hours=-6)
+    assert datetime(2027, 7, 1, 12, tzinfo=TZ).utcoffset() == timedelta(hours=-6)
+    # Old rules still apply to the past.
+    assert datetime(2025, 12, 15, 12, tzinfo=TZ).utcoffset() == timedelta(hours=-7)
