@@ -82,15 +82,29 @@ This is the hardest part.
 3. **Interpolate the crossing time.** 3,600 is 62% of the way from 3,420 to 3,710, so the bus passed at about 17:23:19.
 4. **Compare to the schedule** to get the delay at that stop.
 
+**Snapping pings onto the route** (`pipeline/geometry.py`, `pipeline/arrivals.py`):
+
+- Coordinates are flattened to metres (equirectangular projection around the shape's centre; error well under 0.1% at city scale).
+- Many routes use the same street in both directions or loop back on themselves, so "nearest point on the line" is ambiguous. The line is split into **passes**: each separate time it comes within reach of the point, reduced to its closest spot. A ping goes to the **earliest pass at or ahead of the previous ping** (30 m of backwards jitter allowed), so a bus can't jump onto the return leg.
+- **Stops are placed together, not one by one:** one pass per stop is chosen so stops never go backwards and the total distance from the line is smallest (a small dynamic program). Placing them greedily fails on out-and-back routes, where a return-leg stop across the street is also close to the outbound leg. Trips with the same shape and stop list reuse the result.
+- **Known limitation:** within about 150 m of a mid-route turnaround, the return side is within GPS noise of the outbound side, so one ping can land on the wrong leg. The next ping corrects it. Stops near such turnarounds are slightly less accurate.
+
 **Cleaning:**
 
-- **Missing timestamps:** most vehicles report no GPS timestamp of their own. For those, a ping's time is the feed time of the first snapshot where the position changed. Repeated identical positions are treated as one ping, not as a bus standing still.
-- GPS jitter (a bus appearing to move backwards) is smoothed.
-- Detours (pings far from the route shape) are flagged and excluded.
-- Layovers at the first stop are handled by measuring departure, not arrival.
-- Every dropped observation is counted and reported.
+- **Timestamps:** a ping's time is the vehicle's own GPS timestamp when present (about 30% of pings), otherwise the feed snapshot time minus the day's measured lag. Measured on Route 3, Nov 23 2026: feed time trails the GPS fix by a median 15 s (p10 6 s, p90 24 s), over first appearances only.
+- **Arrivals:** repeated identical positions keep only the first occurrence (correct for arriving).
+- **Departures:** a stopped bus reports the *same* coordinates on each new fix (17% of new fixes on Route 3), so a second track keeps repeats and departure = first time the bus is 30 m past the stop. For buses with their own timestamp, stale repeats (same timestamp) are removed first. For buses without one, a stale repeat looks like standing still, so their departures can read slightly late. The report shows both groups so the size of that bias is visible.
+- **Stale trip IDs:** a bus sometimes reports an old trip ID again on a later run (on Route 3, one trip reappeared ~2 h later and looked like 10 stops served 2 hours late). Two guards: pings more than 30 min before a trip's scheduled start or 90 min after its end are ignored; and if a trip has no *on-route* ping for 15+ min (the bus went silent, or kept reporting from a garage or detour) and then resumes, it's split into runs and only the run closest to the trip's scheduled middle is kept. The split uses the on-route track with repeated positions kept, so a long dwell at a stop isn't mistaken for a gap. Both are counted in the report. Cost: a genuine 15+ min GPS outage mid-trip loses the rest of that trip (counted, not guessed).
+- **GPS jitter:** distance along the route is made non-decreasing (running maximum), so jitter at a stop can't create a second arrival.
+- **Bad fixes:** pings more than 50 m from the line, or implying more than 126 km/h since the previous ping, are dropped and counted.
+- **No guessing:** if the pings either side of a stop are more than 2 minutes apart, or the trip's data starts after the stop, there is no estimate for that stop.
+- **On time** = **departure from a timepoint** between 1 minute early and 5 minutes late. Timepoints are the stops the schedule marks with `timepoint=1`; times between them are estimates. Departure is what matters to riders (a bus that leaves early is the one you miss), and it's the common industry measure; Calgary Transit doesn't publish its exact definition. Arrivals at every stop are reported as a secondary view. The first stop of each trip counts for departure but not arrival.
 
-**Validation:** I logged real arrival times on _TBD_ bus rides and compared them with the computed times. Median error: _TBD_ seconds. Results are published in `docs/validation.md`.
+**Validation:**
+
+- **Leave-one-out (automatic):** for every ping within 15 m of a stop, hide it, interpolate its time from the neighbouring pings, and compare. This runs over thousands of real stop visits. It's pessimistic, because hiding a ping doubles the gap being bridged. Results: _TBD_.
+- **Unit tests** with known answers: constant speed, out-and-back routes on dense shapes, backwards jitter, off-route pings, long gaps, a bus 3 minutes late.
+- **Independent check:** one session at a busy stop, hand-timing real arrivals against computed ones. Results: _TBD_.
 
 ---
 
@@ -182,6 +196,8 @@ Score: _TBD_ / 40.
 ## 12. Limitations
 
 - Accuracy depends on Calgary Transit's GPS feed, which sometimes has gaps or missing buses.
+- **Buses only.** CTrain lines are in the schedule but not in the real-time vehicle feed (checked Nov 23 2026: 258 of 260 routes had GPS; the two missing were the CTrain lines).
+- Trips where the bus disappears from the route for 15+ minutes keep only the part that fits the schedule; the rest of that trip gets no estimate. This drops some genuine long disruptions (e.g. a 25-minute detour) rather than risk inventing delays.
 - Collection started in late November 2026. Seasonal patterns aren't covered yet.
 - Single-route leave-by advice only. No transfers, because the Transit app already handles trip planning.
 - This is an independent project, not affiliated with or endorsed by the City of Calgary or Calgary Transit.
