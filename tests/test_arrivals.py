@@ -6,6 +6,7 @@ from pipeline.arrivals import (
     MAX_GAP_S,
     Track,
     build_track,
+    clean_vehicle_ts,
     crossing_times,
     leave_one_out,
     stop_distances,
@@ -186,3 +187,21 @@ def test_departure_sees_dwell_arrival_does_not():
     dep = crossing_times(build_track(df, line, keep_repeats=True), np.array([330.0]))
     assert arr == pytest.approx([30.0], abs=0.5)
     assert dep == pytest.approx([93.0], abs=0.5)   # left between t=90 and t=120, 30 m past at ~93 s
+
+
+def test_clean_vehicle_ts_three_cases():
+    feed = 1_800_000_000
+    rows = pd.DataFrame({
+        "feed_ts": [feed] * 6,
+        "vehicle_ts": pd.array([feed - 15, feed + 10, None, feed - 900, feed - 39 * 365 * 86400, feed + 3600],
+                               dtype="Int64"),
+        "lat": [51.0] * 6,
+    })
+    out, counts = clean_vehicle_ts(rows)
+    # normal (15 s old), small skew (10 s ahead), no timestamp: kept as they are
+    assert out["vehicle_ts"].iloc[:3].tolist()[:2] == [feed - 15, feed + 10]
+    # 15 min old: stale position, dropped
+    assert counts["vehicle_ts_stale_dropped"] == 1 and len(out) == 5
+    # 1987, and 1 h in the future: broken clocks, timestamp removed but row kept
+    assert counts["vehicle_ts_broken"] == 2
+    assert out["vehicle_ts"].isna().sum() == 3

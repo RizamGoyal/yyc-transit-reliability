@@ -22,7 +22,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pipeline.arrivals import MAX_GAP_S, measure_lag, route_day_arrivals
+from pipeline.arrivals import MAX_GAP_S, clean_vehicle_ts, measure_lag, route_day_arrivals
 from pipeline.match import check_match_rate, match_trips
 from pipeline.positions import load_positions
 
@@ -56,6 +56,7 @@ def main() -> None:
     db = sqlite3.connect(a.db)
     m = match_trips(load_positions(a.days), db)
     check_match_rate(m, db)
+    m, _ = clean_vehicle_ts(m)
     sel = m[m["service_active"] & (m["route_short_name"] == a.route) & (m["service_date"] == a.date)]
     if sel.empty:
         day = m[m["service_active"] & (m["service_date"] == a.date)]

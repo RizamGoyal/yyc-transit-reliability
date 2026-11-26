@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from pipeline.arrivals import measure_lag, route_day_arrivals
+from pipeline.arrivals import clean_vehicle_ts, measure_lag, route_day_arrivals
 from pipeline.match import TZ, check_match_rate, match_trips
 from pipeline.positions import load_files
 from pipeline.schedule import active_services, version_for
@@ -108,6 +108,8 @@ def process_day(positions_dir: Path, db: sqlite3.Connection, service_date: date)
                 rows_matched=int(m["matched"].sum()))
     day = m[m["service_active"] & (m["service_date"] == service_date)]
     del m
+    day, ts_counts = clean_vehicle_ts(day)
+    info.update(ts_counts)
     lag_s, lag_n = measure_lag(day)
     info.update(rows_used=len(day), lag_s=lag_s, lag_fixes=lag_n)
 

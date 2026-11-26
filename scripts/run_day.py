@@ -50,6 +50,12 @@ def summarize(day: date, result, seconds: float, ev_path) -> None:
     print(f"  GPS rows            : {info['rows']:,}, matched to schedule "
           f"{pct(info['rows_matched'], info['rows'])}, used for this day {info['rows_used']:,}")
     print(f"  timestamp lag       : {info['lag_s']:.0f}s (from {info['lag_fixes']:,} fixes)")
+    used, broken = info.get("rows_used", 0), info.get("vehicle_ts_broken", 0)
+    print(f"  bus timestamps      : {broken:,} broken clocks ignored, "
+          f"{info.get('vehicle_ts_stale_dropped', 0):,} stale positions dropped")
+    if used and broken / used > 0.2:
+        print(f"  WARNING: {100 * broken / used:.0f}% of rows had a broken bus clock (feed incident?); "
+              "feed time was used instead")
     n_sched = int((r["trips_scheduled"] > 0).sum())
     print(f"  routes              : {len(with_gps)} with GPS / {n_sched} scheduled")
     print(f"  trips               : {int(r['trips_with_gps'].sum()):,} with GPS / "

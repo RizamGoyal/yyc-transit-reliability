@@ -18,7 +18,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pipeline.arrivals import measure_lag, route_day_arrivals
+from pipeline.arrivals import clean_vehicle_ts, measure_lag, route_day_arrivals
 from pipeline.geometry import EARTH_RADIUS_M
 from pipeline.match import TZ, check_match_rate, match_trips
 from pipeline.positions import load_positions
@@ -57,6 +57,7 @@ def main() -> None:
     db = sqlite3.connect(a.db)
     m = match_trips(load_positions(a.days), db)
     check_match_rate(m, db)
+    m, _ = clean_vehicle_ts(m)
     sel = m[m["service_active"] & (m["route_short_name"] == a.route) & (m["service_date"] == a.date)]
     arr, _, _ = route_day_arrivals(sel, db, lag_s=measure_lag(m)[0])
     first = arr.groupby("trip_id", observed=True)["stop_sequence"].transform("min") == arr["stop_sequence"]

@@ -16,7 +16,7 @@ from pipeline.schedule import load_schedule, open_db
 
 
 def write_positions(root, rows):
-    """rows: (feed_ts, vehicle_id, trip_id, lat, lon) -> hourly files like the collector's."""
+    """rows: (feed_ts, vehicle_id, trip_id, lat, lon[, vehicle_ts]) -> hourly files like the collector's."""
     by_file = {}
     for r in rows:
         t = datetime.fromtimestamp(r[0], tz=timezone.utc)
@@ -26,8 +26,8 @@ def write_positions(root, rows):
         with gzip.open(path, "wt", newline="") as f:
             w = csv.writer(f)
             w.writerow(COLUMNS)
-            for ts, veh, trip, lat, lon in rs:
-                w.writerow([ts, "", veh, trip, "", "", f"{lat:.6f}", f"{lon:.6f}", "", ""])
+            for ts, veh, trip, lat, lon, *vts in rs:
+                w.writerow([ts, vts[0] if vts else "", veh, trip, "", "", f"{lat:.6f}", f"{lon:.6f}", "", ""])
 
 
 def test_hour_files_cover_0200_to_0500_next_day(tmp_path):
@@ -93,3 +93,22 @@ def test_match_rate_collapse_stops_with_diagnostics(tmp_path):
     m = match_trips(load_files(sorted((tmp_path / "positions").rglob("*.csv.gz"))), sched)
     with pytest.raises(RuntimeError, match="matched the schedule"):
         check_match_rate(m, sched)
+
+
+def test_broken_bus_clock_gives_same_result_as_no_clock(tmp_path):
+    """Nov 25 2026: the City's feed sent 1987-dated timestamps for ~14 hours. Those must be
+    ignored (feed time used instead), not trusted."""
+    sched = open_db(tmp_path / "schedule.db")
+    load_schedule(make_zip(tmp_path / "2026-11-19_abcd1234.zip"), sched)
+    start = int(datetime(2026, 11, 23, 23, 58, tzinfo=TZ).timestamp())
+    end = int(datetime(2026, 11, 24, 1, 33, tzinfo=TZ).timestamp())
+    t = np.arange(start, end + 1, 30)
+    lat = 51.0 + 0.01 * (t - start) / (end - start)
+    year_1987 = 39 * 365 * 86400
+    rows = [(ts, "7927", "T1", la, -114.0, ts - year_1987) for ts, la in zip(t, lat, strict=True)]
+    write_positions(tmp_path / "positions", rows)
+    result = process_day(tmp_path / "positions", sched, date(2026, 11, 23))
+    assert result.info["vehicle_ts_broken"] == len(t)
+    assert result.info["lag_s"] == 15  # broken clocks don't count toward the measured lag
+    ev = result.events.set_index("stop_sequence")
+    assert ev.loc[2, "delay_s"] == pytest.approx(180 - 15, abs=1)  # same as a bus with no clock

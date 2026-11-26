@@ -48,6 +48,9 @@ WINDOW_BEFORE_S = 1800   # pings more than 30 min before the trip's scheduled st
 WINDOW_AFTER_S = 5400    # ...or more than 90 min after its scheduled end (stale trip IDs reused later)
 RUN_GAP_S = 900          # silence longer than this splits a trip's pings into separate runs
 DEFAULT_LAG_S = 15.0     # feed time minus GPS fix time, used if a day has too few fixes to measure
+TS_MAX_AGE_S = 300       # a GPS fix may be up to 5 min older than the feed snapshot...
+TS_SKEW_S = 30           # ...or up to 30 s newer (clock skew)
+TS_BROKEN_S = 86400      # more than a day off (or newer than skew allows): the bus's clock is wrong
 
 
 @dataclass
@@ -236,12 +239,37 @@ def best_run(track: Track, sched_mid_ts: float) -> tuple[float, float, int]:
     return float(t[keep].min()), float(t[keep].max()), int((~keep).sum())
 
 
+def clean_vehicle_ts(rows: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Check each bus's own GPS timestamp against the feed snapshot time.
+
+    - 0-5 min older (up to 30 s newer for clock skew): normal, kept.
+    - 5 min to 1 day older: the POSITION is stale (an old fix repeated). Row dropped:
+      neither timestamp says when the bus was really there.
+    - More than a day off, or newer than the skew allows: the bus's CLOCK is broken but
+      the position is current. Timestamp discarded; feed time minus the lag is used.
+
+    Why: on Nov 25 2026 the City's feed sent 1987-dated timestamps for ~14 hours on most
+    buses. Trusting them put every ping decades in the past and turned the whole day's
+    results into nonsense (75% "early"). Returns (cleaned rows, counts).
+    """
+    lag = (rows["feed_ts"].astype("float64") - rows["vehicle_ts"].astype("Float64")).astype("float64")
+    has = lag.notna()
+    stale = has & (lag > TS_MAX_AGE_S) & (lag <= TS_BROKEN_S)
+    broken = has & ((lag > TS_BROKEN_S) | (lag < -TS_SKEW_S))
+    out = rows[~stale.to_numpy()].copy()
+    out.loc[broken[~stale].to_numpy(), "vehicle_ts"] = pd.NA
+    counts = {"rows_with_vehicle_ts": int(has.sum()), "vehicle_ts_stale_dropped": int(stale.sum()),
+              "vehicle_ts_broken": int(broken.sum())}
+    return out, counts
+
+
 def measure_lag(rows: pd.DataFrame, min_fixes: int = 200) -> tuple[float, int]:
     """Median of (feed time - GPS fix time) over the first appearance of each fix.
     Returns (lag seconds, number of fixes); DEFAULT_LAG_S if there are too few."""
     has = rows[rows["vehicle_ts"].notna()]
     first = has.groupby(["vehicle_id", "vehicle_ts"], observed=True)["feed_ts"].min().reset_index()
     lag = (first["feed_ts"] - first["vehicle_ts"]).astype(float)
+    lag = lag[(lag >= -TS_SKEW_S) & (lag <= TS_MAX_AGE_S)]  # only plausible fixes (see clean_vehicle_ts)
     if len(lag) < min_fixes:
         return DEFAULT_LAG_S, len(lag)
     return float(lag.median()), len(lag)
