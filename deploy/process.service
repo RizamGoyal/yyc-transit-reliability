@@ -7,6 +7,8 @@ Type=oneshot
 User=__USER__
 WorkingDirectory=/home/__USER__/yyc-transit-reliability
 EnvironmentFile=/home/__USER__/yyc-transit-reliability/.env
+# Print progress to the journal as it happens (Python buffers output when it isn't a terminal).
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/bin/bash /home/__USER__/yyc-transit-reliability/scripts/process.sh
 # Never compete with the collector: lowest-ish CPU and disk priority, and a memory cap
 # well inside the 1 GB VM (a service day peaks around 300-400 MB).
@@ -14,4 +16,6 @@ Nice=10
 CPUWeight=20
 IOWeight=20
 MemoryMax=750M
-TimeoutStartSec=3h
+# One day takes ~20-40 min on the e2-micro's shared CPU; a catch-up after an outage can be
+# several days. Finished days are saved as they complete, so a timeout loses at most one.
+TimeoutStartSec=8h

@@ -76,6 +76,7 @@ def summarize(day: date, result, seconds: float, ev_path) -> None:
 def run_one(day: date, data: Path, sched: sqlite3.Connection, required: bool) -> bool:
     """Process and save one day. Returns False if there was no GPS for it."""
     t0 = time.time()
+    print(f"processing {day} ...", flush=True)
     result = process_day(data / "positions", sched, day)
     if result.routes.empty:
         msg = f"{day}: no GPS files for this service day ({result.info['hours_missing']} hours missing)"
@@ -114,8 +115,9 @@ def main() -> None:
             res = open_results(data / "results.db")
             done = {r[0] for r in res.execute("SELECT service_date FROM days")}
             res.close()
-        earlier = [yesterday - timedelta(days=k) for k in range(a.catch_up - 1, 0, -1)]
-        days = [d for d in earlier if d.isoformat() not in done] + [yesterday]
+        # Yesterday first (the freshest result matters most), then missing older days, newest first.
+        earlier = [yesterday - timedelta(days=k) for k in range(1, a.catch_up)]
+        days = [yesterday] + [d for d in earlier if d.isoformat() not in done]
         required = False
 
     failed = []
